@@ -1,0 +1,88 @@
+name: CI & Release
+
+on:
+  push:
+    branches: [main, master]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Run tests
+        run: cargo test --all-features
+
+      - name: Check compilation
+        run: cargo check --all-targets --all-features
+
+  release:
+    name: Build Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --release --locked
+
+      - name: Package release
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p release
+
+          shopt -s nullglob
+          binaries=(target/release/*)
+
+          for file in "${binaries[@]}"; do
+            if [[ -f "$file" && -x "$file" && "$file" != *.so && "$file" != *.dylib ]]; then
+              cp "$file" release/
+            fi
+          done
+
+          tar -czf "${GITHUB_REPOSITORY##*/}-linux-x86_64.tar.gz" -C release .
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            "${GITHUB_REPOSITORY##*/}-linux-x86_64.tar.gz" \
+            --generate-notes
